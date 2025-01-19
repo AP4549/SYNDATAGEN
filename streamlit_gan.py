@@ -45,6 +45,7 @@ def build_gan(input_dim, output_dim, learning_rate):
         name="discriminator"
     )
 
+    # Compile the discriminator
     discriminator.compile(
         loss='binary_crossentropy',
         optimizer=tf.keras.optimizers.Adam(learning_rate),
@@ -52,13 +53,15 @@ def build_gan(input_dim, output_dim, learning_rate):
     )
     discriminator.trainable = False
 
+    # Build and compile the GAN
     gan = Sequential([generator, discriminator], name="gan")
     gan.compile(
         loss='binary_crossentropy',
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate)
+        optimizer=tf.keras.optimizers.Adam(learning_rate)  # Use the standard Adam optimizer
     )
 
     return gan, generator, discriminator
+
 
 def train_gan(gan, generator, discriminator, real_data, epochs, batch_size):
     n_samples = real_data.shape[0]
