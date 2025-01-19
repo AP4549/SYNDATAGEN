@@ -1,6 +1,7 @@
 streamlit
-tensorflow
 pandas
 numpy
 matplotlib
 psutil
+tensorflow>=2.12,<3.0
+

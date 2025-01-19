@@ -47,7 +47,7 @@ def build_gan(input_dim, output_dim, learning_rate):
 
     discriminator.compile(
         loss='binary_crossentropy',
-        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate),
+        optimizer=tf.keras.optimizers.Adam(learning_rate),
         metrics=['accuracy']
     )
     discriminator.trainable = False
