@@ -1,195 +1,140 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LeakyReLU, BatchNormalization
 import os
+import numpy as np
+import pandas as pd
 import psutil
-import matplotlib.pyplot as plt
-
-st.title("Enhanced GAN-Based Synthetic Data Generator")
-st.write("This app demonstrates how to build a Generative Adversarial Network (GAN) to generate synthetic data.")
-
-def load_data(file_buffer):
-    try:
-        data = pd.read_csv(file_buffer)
-        st.success("Data loaded successfully.")
-        return data
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return None
-
-def build_gan(input_dim, output_dim, learning_rate):
-    generator = Sequential(
-        [
-            Dense(128, activation='relu', input_dim=input_dim),
-            BatchNormalization(),
-            Dense(256, activation='relu'),
-            BatchNormalization(),
-            Dense(512, activation='relu'),
-            BatchNormalization(),
-            Dense(output_dim, activation='linear')
-        ],
-        name="generator"
-    )
-
-    discriminator = Sequential(
-        [
-            Dense(512, input_dim=output_dim),
-            LeakyReLU(alpha=0.2),
-            Dense(256),
-            LeakyReLU(alpha=0.2),
-            Dense(1, activation='sigmoid')
-        ],
-        name="discriminator"
-    )
-
-    # Compile the discriminator
-    discriminator.compile(
-        loss='binary_crossentropy',
-        optimizer=tf.keras.optimizers.Adam(learning_rate),
-        metrics=['accuracy']
-    )
-    discriminator.trainable = False
-
-    # Build and compile the GAN
-    gan = Sequential([generator, discriminator], name="gan")
-    gan.compile(
-        loss='binary_crossentropy',
-        optimizer=tf.keras.optimizers.Adam(learning_rate)  # Use the standard Adam optimizer
-    )
-
-    return gan, generator, discriminator
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+import streamlit as st
 
 
-def train_gan(gan, generator, discriminator, real_data, epochs, batch_size):
-    n_samples = real_data.shape[0]
-    input_dim = generator.input_shape[1]
-    n_batches = max(1, n_samples // batch_size)
+# Utility function to monitor system resources
+def monitor_resources():
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    cpu_percent = process.cpu_percent()
+    st.sidebar.write(f"Memory Usage: {mem_info.rss / (1024 ** 2):.2f} MB")
+    st.sidebar.write(f"CPU Usage: {cpu_percent:.2f}%")
 
-    d_losses, g_losses = [], []
+
+# Build GAN
+def build_gan(input_dim, latent_dim):
+    # Generator
+    generator = tf.keras.Sequential([
+        layers.Dense(128, activation="relu", input_dim=latent_dim),
+        layers.Dense(256, activation="relu"),
+        layers.Dense(input_dim, activation="tanh")
+    ])
+    
+    # Discriminator
+    discriminator = tf.keras.Sequential([
+        layers.Dense(256, activation="relu", input_dim=input_dim),
+        layers.Dense(128, activation="relu"),
+        layers.Dense(1, activation="sigmoid")
+    ])
+    
+    return generator, discriminator
+
+
+# Train GAN
+def train_gan(generator, discriminator, data, latent_dim, epochs, batch_size):
+    gan = tf.keras.Sequential([generator, discriminator])
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0002)
 
     for epoch in range(epochs):
-        d_loss_epoch, g_loss_epoch = 0, 0
+        for _ in range(batch_size):
+            noise = np.random.normal(0, 1, (batch_size, latent_dim))
+            fake_data = generator.predict(noise)
+            real_data = data[np.random.randint(0, data.shape[0], batch_size)]
+            combined_data = np.vstack((real_data, fake_data))
 
-        for batch in range(n_batches):
-            memory_usage = psutil.virtual_memory().percent
-            cpu_usage = psutil.cpu_percent(interval=0.1)
-            st.write(f"Memory Usage: {memory_usage}% | CPU Usage: {cpu_usage}%")
-
-            start_idx = batch * batch_size
-            end_idx = min(start_idx + batch_size, n_samples)
-            real_samples = real_data.iloc[start_idx:end_idx].values
-
-            noise = np.random.normal(0, 1, (real_samples.shape[0], input_dim))
-            fake_samples = generator.predict(noise)
-
-            combined_samples = np.vstack([real_samples, fake_samples])
-            real_labels = np.ones(real_samples.shape[0]) * np.random.uniform(0.8, 1.0)
-            fake_labels = np.zeros(fake_samples.shape[0]) * np.random.uniform(0.0, 0.2)
-            labels = np.hstack([real_labels, fake_labels])
-
+            labels = np.zeros((2 * batch_size, 1))
+            labels[:batch_size] = 1
+            
             discriminator.trainable = True
-            d_loss = discriminator.train_on_batch(combined_samples, labels)
-            d_loss_epoch += d_loss[0] if isinstance(d_loss, (list, tuple)) else d_loss
+            d_loss = discriminator.train_on_batch(combined_data, labels)
 
-            noise = np.random.normal(0, 1, (real_samples.shape[0], input_dim))
-            misleading_labels = np.ones(real_samples.shape[0])
+            noise = np.random.normal(0, 1, (batch_size, latent_dim))
+            misleading_labels = np.ones((batch_size, 1))
+
             discriminator.trainable = False
             g_loss = gan.train_on_batch(noise, misleading_labels)
-            g_loss_epoch += g_loss[0] if isinstance(g_loss, (list, tuple)) else g_loss
+        
+        st.write(f"Epoch {epoch + 1}/{epochs} | D Loss: {d_loss:.4f} | G Loss: {g_loss:.4f}")
+        monitor_resources()
 
-        avg_d_loss = d_loss_epoch / n_batches
-        avg_g_loss = g_loss_epoch / n_batches
-        d_losses.append(avg_d_loss)
-        g_losses.append(avg_g_loss)
-        st.write(f"Epoch {epoch + 1}/{epochs} | Discriminator Loss: {avg_d_loss:.4f} | Generator Loss: {avg_g_loss:.4f}")
 
-    st.success("GAN training complete!")
-    return d_losses, g_losses
+# Build VAE
+def build_vae(input_dim, latent_dim):
+    encoder_inputs = layers.Input(shape=(input_dim,))
+    x = layers.Dense(128, activation="relu")(encoder_inputs)
+    x = layers.Dense(64, activation="relu")(x)
+    z_mean = layers.Dense(latent_dim, name="z_mean")(x)
+    z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
+    z = layers.Lambda(lambda p: p[0] + tf.random.normal(tf.shape(p[0])) * tf.exp(p[1] / 2), name="z")([z_mean, z_log_var])
+    encoder = Model(encoder_inputs, [z_mean, z_log_var, z], name="encoder")
 
-def generate_synthetic_data(generator, num_samples, original_data):
-    noise = np.random.normal(0, 1, (num_samples, generator.input_shape[1]))
+    latent_inputs = layers.Input(shape=(latent_dim,))
+    x = layers.Dense(64, activation="relu")(latent_inputs)
+    x = layers.Dense(128, activation="relu")(x)
+    decoder_outputs = layers.Dense(input_dim, activation="sigmoid")(x)
+    decoder = Model(latent_inputs, decoder_outputs, name="decoder")
+
+    outputs = decoder(encoder(encoder_inputs)[2])
+    vae = Model(encoder_inputs, outputs, name="vae")
+
+    reconstruction_loss = tf.keras.losses.mean_squared_error(encoder_inputs, outputs)
+    kl_loss = -0.5 * tf.reduce_mean(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+    vae.add_loss(reconstruction_loss + kl_loss)
+    vae.compile(optimizer="adam")
+
+    return vae, encoder, decoder
+
+
+# Synthetic Data Generator
+def generate_synthetic_data(generator, latent_dim, num_samples):
+    noise = np.random.normal(0, 1, (num_samples, latent_dim))
     synthetic_data = generator.predict(noise)
+    return pd.DataFrame(synthetic_data)
 
-    for i, column in enumerate(original_data.columns):
-        col_min, col_max = original_data[column].min(), original_data[column].max()
 
-        if np.issubdtype(original_data[column].dtype, np.integer):
-            synthetic_data[:, i] = np.round(synthetic_data[:, i])
+# Streamlit App
+def main():
+    st.title("Synthetic Data Generator")
+    st.sidebar.header("Configurations")
 
-        synthetic_data[:, i] = np.clip(synthetic_data[:, i], col_min, col_max)
+    model_type = st.sidebar.selectbox("Select Model", ["GAN", "VAE"])
+    input_dim = st.sidebar.number_input("Input Dimension", min_value=1, value=10)
+    latent_dim = st.sidebar.number_input("Latent Dimension", min_value=1, value=5)
+    num_samples = st.sidebar.number_input("Number of Samples", min_value=1, value=1000)
+    epochs = st.sidebar.number_input("Epochs", min_value=1, value=100)
+    batch_size = st.sidebar.number_input("Batch Size", min_value=1, value=32)
 
-        unique_mod10 = np.unique(original_data[column] % 10)
-        if len(unique_mod10) == 1 and unique_mod10[0] == 0:
-            synthetic_data[:, i] = np.round(synthetic_data[:, i] / 10) * 10
+    uploaded_file = st.sidebar.file_uploader("Upload Dataset (CSV)", type="csv")
+    if uploaded_file:
+        real_data = pd.read_csv(uploaded_file).values
+        st.write("Uploaded Data Sample:")
+        st.write(pd.DataFrame(real_data).head())
+    else:
+        st.warning("Please upload a dataset to proceed.")
+        return
 
-    synthetic_df = pd.DataFrame(synthetic_data, columns=original_data.columns)
-
-    for col in original_data.columns:
-        if np.issubdtype(original_data[col].dtype, np.integer):
-            synthetic_df[col] = synthetic_df[col].astype(int)
-
-    return synthetic_df
-
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"], accept_multiple_files=False, key="file_uploader")
-if uploaded_file:
-    real_data = load_data(uploaded_file)
-
-    if real_data is not None:
-        st.write("Data Preview:")
-        st.dataframe(real_data.head())
-
-        numeric_data = real_data.select_dtypes(include=[np.number])
-        if numeric_data.empty:
-            st.error("No numeric columns found in the dataset.")
+    if st.sidebar.button("Train Model"):
+        if model_type == "GAN":
+            generator, discriminator = build_gan(input_dim, latent_dim)
+            train_gan(generator, discriminator, real_data, latent_dim, epochs, batch_size)
+            synthetic_data = generate_synthetic_data(generator, latent_dim, num_samples)
+            st.success("GAN Training Complete!")
         else:
-            st.write("Numeric Data Preview:")
-            st.dataframe(numeric_data.head())
+            vae, encoder, decoder = build_vae(input_dim, latent_dim)
+            vae.fit(real_data, real_data, epochs=epochs, batch_size=batch_size, verbose=0)
+            noise = np.random.normal(0, 1, (num_samples, latent_dim))
+            synthetic_data = pd.DataFrame(decoder.predict(noise))
+            st.success("VAE Training Complete!")
 
-            if numeric_data.nunique().min() < 2:
-                st.warning("Warning: Some columns have very low diversity. Consider using a more diverse dataset.")
+        st.write("Generated Synthetic Data Sample:")
+        st.write(synthetic_data.head())
+        csv = synthetic_data.to_csv(index=False)
+        st.download_button(label="Download Synthetic Data", data=csv, file_name="synthetic_data.csv", mime="text/csv")
 
-            st.sidebar.header("GAN Configuration")
-            epochs = min(max(10, numeric_data.shape[0] // 100), 200)
-            batch_size = min(max(32, numeric_data.shape[0] // 50), 256)
-            learning_rate = st.sidebar.slider("Learning Rate:", min_value=0.00001, max_value=0.01, value=0.0002, step=0.00001)
-
-            st.sidebar.write(f"Calculated Epochs: {epochs}")
-            st.sidebar.write(f"Calculated Batch Size: {batch_size}")
-
-            gan, generator, discriminator = build_gan(
-                input_dim=numeric_data.shape[1],
-                output_dim=numeric_data.shape[1],
-                learning_rate=learning_rate
-            )
-
-            if st.button("Train GAN"):
-                with st.spinner("Training..."):
-                    d_losses, g_losses = train_gan(gan, generator, discriminator, numeric_data, epochs=epochs, batch_size=batch_size)
-
-                st.subheader("Loss Curves")
-                fig, ax = plt.subplots()
-                ax.plot(d_losses, label='Discriminator Loss')
-                ax.plot(g_losses, label='Generator Loss')
-                ax.set_title('Loss Curves')
-                ax.set_xlabel('Epochs')
-                ax.set_ylabel('Loss')
-                ax.legend()
-                st.pyplot(fig)
-
-            num_samples = st.sidebar.number_input("Enter the number of synthetic rows to generate:", min_value=1, value=10, step=1)
-            if st.button("Generate Synthetic Data"):
-                synthetic_df = generate_synthetic_data(generator, num_samples, numeric_data)
-
-                st.write("Generated Synthetic Data:")
-                st.dataframe(synthetic_df)
-
-                csv = synthetic_df.to_csv(index=False)
-                st.download_button(
-                    label="Download Synthetic Data",
-                    data=csv,
-                    file_name="synthetic_data.csv",
-                    mime="text/csv"
-                )
+if __name__ == "__main__":
+    main()
